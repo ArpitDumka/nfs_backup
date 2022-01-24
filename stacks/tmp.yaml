@@ -1,0 +1,855 @@
+version: '3.7'
+
+networks:
+  network:
+    driver: overlay
+    attachable: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.0.255.0/24
+
+configs:
+  config:
+    file: ${CONFIG_BASE_PATH}/services/config.yml
+  controller_config:
+    file: ${CONFIG_BASE_PATH}/services/controller.json
+  executor_config:
+    file: ${CONFIG_BASE_PATH}/services/executor.json
+  ml_config:
+    file: ${CONFIG_BASE_PATH}/services/ml.ini
+  logstash_config:
+    file: ${CONFIG_BASE_PATH}/logstash/logstash.conf
+  logstash_yml:
+    file: ${CONFIG_BASE_PATH}/logstash/logstash.yml
+
+services:
+  # Databases
+  mysql:
+    image: mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_CREDENTIALS}
+    networks:
+      network:
+        aliases:
+            - mysql
+    volumes:
+      - mysql:/var/lib/mysql
+      - ../seeds/mysql/:/seeds/
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.stateful01==true ]
+    
+  mongodb:
+    image: mongo
+    command: --auth
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=${DB_CREDENTIALS}
+    networks:
+      network:
+        aliases:
+            - mongodb
+    volumes:
+      - mongodb:/data/db/
+      - ../seeds/mongodb/:/seedfiles/
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.stateful03==true ]
+
+  redis:
+    image: redis
+    networks:
+      network:
+        aliases:
+            - redis
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  # ESS Stack
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION}
+    networks:
+      network:
+        aliases:
+            - elasticsearch
+    volumes:
+      - elasticsearch:/usr/share/elasticsearch/data
+    environment:
+      "discovery.type": single-node
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.stateful02==true ]
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION}
+    command: "-f /usr/share/logstash/pipeline/logstash.conf"
+    networks:
+      network:
+        aliases:
+            - logstash
+    configs:
+      - source: logstash_config
+        target: /usr/share/logstash/pipeline/logstash.conf
+      - source: logstash_yml
+        target: /usr/share/logstash/config/logstash.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+  
+  # Message Queue
+  rabbitmq:
+    image:  yellowmessenger.azurecr.io/rabbitmq-swarm:latest
+    networks:
+      network:
+        aliases:
+            - rabbitmq
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  zookeeper:
+    image: wurstmeister/zookeeper
+    networks:
+      network:
+        aliases:
+            - zookeeper
+    volumes:
+      - zookeeper:/opt/zookeeper-3.4.13/data
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.stateful01==true ]
+
+  kafka:
+    image: wurstmeister/kafka
+    depends_on: 
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+      KAFKA_LISTENERS: INSIDE://:9092,OUTSIDE://:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_ADVERTISED_HOST_NAME: ${KAFKA_ADVERTISED_HOST_NAME}
+      KAFKA_CREATE_TOPICS: ${KAFKA_CREATE_TOPICS}
+      KAFKA_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS}
+      KAFKA_LOG_DIRS: /kafka
+    networks:
+      network:
+        aliases:
+            - kafka
+    volumes:
+      - kafka:/kafka
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.stateful01==true ]
+
+  # DOCKER API
+  dockermanager:
+    image:  yellowmessenger.azurecr.io/dockermanager-onpremise:${STATIC_VERSION}
+    command: tcp-listen:9393,fork,reuseaddr unix-connect:/var/run/docker.sock
+    networks:
+      network:
+        aliases:
+            - dockermanager
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.role == manager ]
+
+  # XMPP Server
+  xmpp:
+    image:  yellowmessenger.azurecr.io/ejabberd-onpremise:docker-v1
+    depends_on: 
+      - mysql
+      - controller
+      - presence
+    environment:
+      - xmpp_domain=xmpp.yellowmssngr.com
+    networks:
+      network:
+        aliases:
+            - xmpp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  # API GateWay
+  api_gateway:
+    image: yellowmessenger.azurecr.io/api-gateway-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - sso
+    environment:
+      - APP_HOST_URL=${APP_URL}
+    ports:
+      - "80:80"
+    networks:
+      network:
+        aliases:
+            - api_gateway
+    volumes:
+      - ${CONFIG_BASE_PATH}/nginx/yellow.conf:/etc/nginx/conf.d/default.conf
+      - ${CONFIG_BASE_PATH}/nginx/ssl_certificates:/etc/nginx/ssl_certificates
+      - ${CONFIG_BASE_PATH}/nginx/yellow_credentials/.htpasswd:/etc/nginx/yellow_credentials/.htpasswd
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.hostname==]
+
+  # SSO
+  sso:
+    image: yellowmessenger.azurecr.io/sso-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - mysql
+      - mongodb
+      - xmpp
+    networks:
+      network:
+        aliases:
+            - sso
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  # Backend Services
+  ai_backend:
+    image: yellowmessenger.azurecr.io/ai-backend-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - mysql
+      - mongodb
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - NODE_TLS_REJECT_UNAUTHORIZED=${NODE_TLS_REJECT_UNAUTHORIZED}
+      - DOCKER=true
+    networks:
+      network:
+        aliases:
+            - ai_backend
+    volumes:
+      - ai_backend:/root/respository/bot_version
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.stateful02==true ]
+
+  bot_audit:
+    image: yellowmessenger.azurecr.io/bot-audit-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - mongodb
+    environment:
+      - DOCKER=true
+      - TOKEN=" "
+    networks:
+      network:
+        aliases:
+            - bot_audit
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+  
+  agents:
+    image: yellowmessenger.azurecr.io/agents-service-onpremise:${YELLOW_VERSION}
+    environment:
+      - NODE_ENV=${NODE_ENV}
+    networks:
+      network:
+        aliases:
+            - agents
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  subscription:
+    image: yellowmessenger.azurecr.io/subscription-service-onpremise:${YELLOW_VERSION}
+    environment:
+      - DOCKER=true
+      - NODE_ENV=${NODE_ENV}
+    networks:
+      network:
+        aliases:
+            - subscription
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  scheduler:
+    image: yellowmessenger.azurecr.io/scheduler-service-onpremise:${YELLOW_VERSION}
+    environment:
+      - NODE_ENV=${NODE_ENV}
+    networks:
+      network:
+        aliases:
+            - scheduler
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 0
+      placement:
+        constraints: []
+
+  controller:
+    image: yellowmessenger.azurecr.io/controller-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - mysql
+      - mongodb
+      - xmpp
+    environment:
+      - DOCKER=true
+      - EXECUTOR_CONFIG_FILE=yellow_executor_config
+      - executorImage=yellowmessenger.azurecr.io/executor-onpremise:${YELLOW_VERSION}
+      - NODE_ENV=${NODE_ENV}
+      - INSIGHTS_STORAGE=${INSIGHTS_STORAGE}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - DATA_SERVICE_URL=${DATA_SERVICE_URL}
+    networks:
+      network:
+        aliases:
+            - controller
+    configs:
+      - source: config
+        target: /config/config.yml
+      - source: controller_config
+        target: /root/.config/configstore/controller.json
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  task_runner:
+    image: yellowmessenger.azurecr.io/task-runner-onpremise:${YELLOW_VERSION}
+    environment:
+      - DOCKER=true
+      - NODE_ENV=${NODE_ENV}
+      - NODE_TLS_REJECT_UNAUTHORIZED=${NODE_TLS_REJECT_UNAUTHORIZED}
+    networks:
+      network:
+        aliases:
+            - task_runner
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+  
+  presence:
+    image: yellowmessenger.azurecr.io/presence-service-onpremise:${YELLOW_VERSION}
+    environment:
+      - NODE_ENV=${NODE_ENV}
+    networks:
+      network:
+        aliases:
+            - presence
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  data_service:
+    image: yellowmessenger.azurecr.io/data-service-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - mysql
+      - mongodb
+      - xmpp
+    environment:
+      # ONLY FOR DATA SERVICE - NODE ENV - docker
+      - NODE_ENV=docker
+      - DOCKER=true
+      - INSIGHTS_STORAGE=${INSIGHTS_STORAGE}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - DATA_SERVICE_URL=${DATA_SERVICE_URL}
+    networks:
+      network:
+        aliases:
+            - data_service
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  plugin_service:
+    image: yellowmessenger.azurecr.io/plugin-service-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - mysql
+      - mongodb
+      - xmpp
+    environment:
+      - STORAGE_DRIVER=${STORAGE_DRIVER}
+      - NODE_ENV=${NODE_ENV}
+      - DOCKER=true
+      - INSIGHTS_STORAGE=${INSIGHTS_STORAGE}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - DATA_SERVICE_URL=${DATA_SERVICE_URL}
+    networks:
+      network:
+        aliases:
+            - plugin_service
+    volumes:
+      - persistent:/root/assets
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  test:
+    image: yellowmessenger.azurecr.io/test-service-onpremise:${YELLOW_VERSION}
+    networks:
+      network:
+        aliases:
+            - test
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  notifications:
+    image: yellowmessenger.azurecr.io/c3po-onpremise:${YELLOW_VERSION}
+    networks:
+      network:
+        aliases:
+            - notifications
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 0
+      placement:
+        constraints: []
+
+  # Frontend
+  app:
+    image: yellowmessenger.azurecr.io/app-onpremise:${YELLOW_VERSION}
+    networks:
+      network:
+        aliases:
+            - app
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+  pwa:
+    image: yellowmessenger.azurecr.io/pwa-onpremise:${YELLOW_VERSION}
+    environment:
+      - DATA_SERVICE_URL=http://plugin_service:3000
+    networks:
+      network:
+        aliases:
+            - pwa
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+    
+  # ML Services     
+  ml:
+    image: yellowmessenger.azurecr.io/ml-python-onpremise:${YELLOW_VERSION}
+    networks:
+      network:
+        aliases:
+            - ml
+    environment:
+      - ML_ENV=deployment
+      - LOAD_FAST_TEXT_MODEL=false
+      - LOAD_CHINESE_MODEL=false
+      - WORD2VEC_VOCAB_SIZE=50000
+      - REPOSITORY_PATH=/root/ml_models/repository/
+      - SECONDARY_MODELS_PATH=/root/ml_models/secondary_models/
+      - VECTOR_PATH=/root/ml_models/word_to_vec_model/
+      - MODELS_PATH=/root/ml_models/models/
+      - MODEL_BASE_PATH=/root/ml_models/
+    volumes:
+      - ${ML_BASE_PATH}:/root/ml_models
+      - ${ML_BASE_PATH}/repository/:/root/ml_models/repository/
+      - ${ML_BASE_PATH}/secondary_models/:/root/ml_models/secondary_models/
+      - ${ML_BASE_PATH}/word_to_vec_model/:/root/ml_models/word_to_vec_model/
+    configs:
+      - source: ml_config
+        target: /root/.config/configstore/ml.ini
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.ml==true ]
+
+  celery:
+    image: yellowmessenger.azurecr.io/ml-python-onpremise:${YELLOW_VERSION}
+    command: ["celery","worker", "-A","main.celery","--loglevel=info", "--pool=solo","--queues=celery","--without-heartbeat"]
+    networks:
+      network:
+        aliases:
+            - celery
+    environment:
+      - ML_ENV=deployment
+      - LOAD_FAST_TEXT_MODEL=false
+      - LOAD_CHINESE_MODEL=false
+      - WORD2VEC_VOCAB_SIZE=50000
+      - REPOSITORY_PATH=/root/ml_models/repository/
+      - SECONDARY_MODELS_PATH=/root/ml_models/secondary_models/
+      - VECTOR_PATH=/root/ml_models/word_to_vec_model/
+      - MODELS_PATH=/root/ml_models/models/
+      - MODEL_BASE_PATH=/root/ml_models/
+    volumes:
+      - ${ML_BASE_PATH}:/root/ml_models
+      - ${ML_BASE_PATH}/repository/:/root/ml_models/repository/
+      - ${ML_BASE_PATH}/secondary_models/:/root/ml_models/secondary_models/
+      - ${ML_BASE_PATH}/word_to_vec_model/:/root/ml_models/word_to_vec_model/
+    configs:
+      - source: ml_config
+        target: /root/.config/configstore/ml.ini
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.ml==true ]
+
+  embedding:
+    image: yellowmessenger.azurecr.io/embedding-service-onpremise:${YELLOW_VERSION}
+    networks:
+      network:
+        aliases:
+            - embedding
+    environment:
+      - ML_ENV=deployment
+      - LOAD_FAST_TEXT_MODEL=false
+      - LOAD_CHINESE_MODEL=false
+      - WORD2VEC_VOCAB_SIZE=50000
+      - REPOSITORY_PATH=/root/ml_models/repository/
+      - VECTOR_PATH=/root/ml_models/word_to_vec_model/
+      - MODELS_PATH=/root/ml_models/models/
+      - MODEL_BASE_PATH=/root/ml_models
+    volumes:
+      - ${ML_BASE_PATH}:/root/ml_models
+      - ${ML_BASE_PATH}/repository/:/root/ml_models/repository/
+      - ${ML_BASE_PATH}/secondary_models/:/root/ml_models/secondary_models/
+      - ${ML_BASE_PATH}/word_to_vec_model/:/root/ml_models/word_to_vec_model/
+    configs:
+      - source: ml_config
+        target: /root/.config/configstore/ml.ini
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.ml==true ]
+
+  embedding_celery:
+    image: yellowmessenger.azurecr.io/embedding-service-onpremise:${YELLOW_VERSION}
+    command: celery worker -A celery_tasks.celery --loglevel=info --pool=solo
+    networks:
+      network:
+        aliases:
+            - embedding_celery
+    environment:
+      - ML_ENV=deployment
+      - LOAD_FAST_TEXT_MODEL=false
+      - LOAD_CHINESE_MODEL=false
+      - WORD2VEC_VOCAB_SIZE=50000
+      - REPOSITORY_PATH=/root/ml_models/repository/
+      - SECONDARY_MODELS_PATH=/root/ml_models/secondary_models/
+      - VECTOR_PATH=/root/ml_models/word_to_vec_model/
+      - MODELS_PATH=/root/ml_models/models/
+      - MODEL_BASE_PATH=/root/ml_models/
+    volumes:
+      - ${ML_BASE_PATH}:/root/ml_models
+      - ${ML_BASE_PATH}/repository/:/root/ml_models/repository/
+      - ${ML_BASE_PATH}/secondary_models/:/root/ml_models/secondary_models/
+      - ${ML_BASE_PATH}/word_to_vec_model/:/root/ml_models/word_to_vec_model/
+    configs:
+      - source: ml_config
+        target: /root/.config/configstore/ml.ini
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [ node.labels.ml==true ]
+
+  # Analytics Services
+  insights:
+    image: yellowmessenger.azurecr.io/insights-service-onpremise:${YELLOW_VERSION}
+    depends_on:
+      - mongodb
+    environment:
+      - INSIGHTS_STORAGE=${INSIGHTS_STORAGE}
+    networks:
+      network:
+        aliases:
+            - insights
+    configs:
+      - source: config
+        target: /config/config.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: []
+
+volumes:
+  mysql:
+    driver: local
+  elasticsearch:
+    driver: local
+  mongodb:
+    driver: local
+  ml_models:
+    driver: local
+  ml_secondary_models:
+    driver: local
+  ml_models_repository:
+    driver: local
+  word_to_vec_model:
+    driver: local
+  persistent:
+    driver: local
+  kafka:
+    driver: local
+  zookeeper:
+    driver: local
+  ai_backend:
+    driver: local
+
+# Node.js  agents-service          -  3000
+# Node.js  ai-backend              -  3000
+# Nginx    api-gateway             -  80
+# React    app                     -  8000
+# Node.js  bot-audit               -  3000
+# Python   ml-python               -  5000 
+# Node.js  controller              -  8080
+# Node.js  data-service            -  3000
+# Python   embedding-service       -  5000
+# Python   embedding-celery        -  3000
+# Node.js  insights-service        -  3015
+# Python   celery                  -  3000
+# Node.js  c3po                    -  3000
+# Node.js  plugin-service          -  3000
+# Node.js  presence-service        -  3000
+# JS       progressive-web-app     -  3000
+# Node.js  scheduler               -  3000
+# Node.js  sso                     -  3000
+# Node.js  subscription-service    -  3000
+# Node.js  task-runner             -  3000
+# Node.js  test-service            -  3000
+# Ejabberd ejabberd-service        -  5280,5222
+# Elastic  elasticsearch           -  9200,9300
+# Elastic  logstash                -  NA
+# Kafka    kafka                   -  9092
+# RabbitMQ rabbitmq                -  5671,5672,15672
+# ZooKeeperzookeeper               -  2181
+# MongoDB  mongodb                 -  27017
+# MySQL    mysql                   -  3306
+# Redis    redis                   -  6379

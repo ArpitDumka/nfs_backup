@@ -1,0 +1,93 @@
+version: '3.1'
+
+networks:
+  network:
+    external: true
+
+services:
+  mysql:
+    image: yellowmessenger.azurecr.io/mysql:5.7
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_CREDENTIALS}
+    networks:
+      network:
+        aliases:
+            - mysql
+    volumes:
+      - ${DATA_PATH}/mysql:/var/lib/mysql # volume mount 
+      - ../../../seeds/mysql/:/seeds/ # bind mount 
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+
+  mongodb:
+    image: yellowmessenger.azurecr.io/mongo:latest
+    command: mongod --replSet rs0 
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=${DB_CREDENTIALS}
+    networks:
+      network:
+        aliases:
+            - mongodb   # http://yellow_mongodb:port  -> http://mongodb:port 
+    volumes:
+      - ${DATA_PATH}/mongodb:/data/db/
+      - ../../../seeds/mongodb/:/seedfiles/
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+
+  redis:
+    image: yellowmessenger.azurecr.io/redis:latest
+    networks:
+      network:
+        aliases:
+            - redis
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+
+  postgres:
+    image: postgres
+    environment:
+     - POSTGRES_PASSWORD=${DB_CREDENTIALS}
+     - PGDATA=/var/lib/postgresql/data
+    volumes:
+      - ${DATA_PATH}/postgres:/var/lib/postgresql/data # volume mount 
+      - ../../../seeds/postgres/:/seeds/ # bind mount 
+    networks:
+      network:
+        aliases:
+            - postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8080:8080
+    networks:
+      network:
+        aliases:
+            - dbadmin

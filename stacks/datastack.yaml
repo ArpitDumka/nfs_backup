@@ -1,0 +1,154 @@
+version: '3.7'
+
+# networks:
+#   network:
+#     driver: overlay
+#     attachable: true
+#     ipam:
+#       driver: default
+#       config:
+#         - subnet: 10.0.255.0/24
+
+networks:
+  MonSwarm_prom_network:
+    external: true
+
+
+configs:
+  logstash_config:
+    file: ${CONFIG_BASE_PATH}/logstash/logstash.conf
+  logstash_yml:
+    file: ${CONFIG_BASE_PATH}/logstash/logstash.yml
+
+services:
+  elasticsearch:
+      image: elasticsearch:7.16.3
+      user: root
+      networks:
+        MonSwarm_prom_network:
+          aliases:
+              - elasticsearch
+      volumes:
+        - ${DATA_PATH}/elasticsearch:/usr/share/elasticsearch/data
+        - ../../../seeds/elasticsearch/:/seeds/ # bind mount 
+      environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ELASTIC_PASSWORD=${DB_CREDENTIALS}
+      - ES_JAVA_OPTS=-Xms4g -Xmx4g
+      - cluster.name=elasticsearch-cluster
+      - node.name=elastic
+      logging:
+        driver: "json-file"
+        options:
+          max-size: "200k"
+          max-file: "3"
+      deploy:
+        mode: replicated
+        replicas: 1
+
+  logstash:
+    image: logstash:7.16.3
+    command: "-f /usr/share/logstash/pipeline/logstash.conf"
+    user: root
+    networks:
+      MonSwarm_prom_network:
+        aliases:
+            - logstash
+    configs:
+      - source: logstash_config
+        target: /usr/share/logstash/pipeline/logstash.conf
+      - source: logstash_yml
+        target: /usr/share/logstash/config/logstash.yml
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+  
+  # Message Queue
+  rabbitmq:
+    image: yellowmessenger.azurecr.io/rabbitmq-swarm:latest
+    user: root
+    networks:
+      MonSwarm_prom_network:
+        aliases:
+            - rabbitmq
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1
+
+  zookeeper:
+    image: bitnami/zookeeper:3.6.3
+    user: root
+    networks:
+      MonSwarm_prom_network:
+        aliases:
+            - zookeeper
+    volumes:
+      - ${DATA_PATH}/zookeeper:/bitnami
+    environment:
+    - ALLOW_ANONYMOUS_LOGIN=yes
+    deploy:
+      mode: replicated
+      replicas: 1
+
+  kafka:
+    image: bitnami/kafka:2.8.1
+    user: root
+    environment:
+      KAFKA_CFG_BROKER_ID: 1
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: INSIDE
+      KAFKA_CFG_LISTENERS: INSIDE://:9092,OUTSIDE://:9094
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_CFG_ADVERTISED_HOST_NAME: ${KAFKA_ADVERTISED_HOST_NAME}
+      KAFKA_CFG_CREATE_TOPICS: ${KAFKA_CREATE_TOPICS}
+      KAFKA_CFG_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS}
+      KAFKA_CFG_LOG_DIRS: /kafka
+      ALLOW_PLAINTEXT_LISTENER: "true"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      MonSwarm_prom_network:
+        aliases:
+            - kafka
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DATA_PATH}/kafka:/kafka
+    deploy:
+      mode: replicated
+      replicas: 1
+  
+  # XMPP Server
+  xmpp:
+    image: yellowmessenger.azurecr.io/ejabberd-onpremise:docker-v1
+    user: root
+    depends_on: 
+      - mysql
+      - controller
+      - presence
+    environment:
+      - xmpp_domain=xmpp.yellowmssngr.com
+      - CONTROLLER_URL=${CONTROLLER_URL}
+      - PRESENCE_URL=${PRESENCE_URL}
+      - SQL_SERVER=${SQL_SERVER}
+    networks:
+      MonSwarm_prom_network:
+        aliases:
+            - xmpp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "3"
+    deploy:
+      mode: replicated
+      replicas: 1

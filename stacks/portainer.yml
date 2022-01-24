@@ -1,0 +1,33 @@
+version: '3.0'
+
+services:
+   agent:
+     image: yellowmessenger.azurecr.io/portainer-agent:v1
+     volumes:
+       - /var/run/docker.sock:/var/run/docker.sock
+       - /var/lib/docker/volumes:/var/lib/docker/volumes
+     networks:
+       - agent_network
+     deploy:
+       mode: global
+       
+   portainer:
+    image: yellowmessenger.azurecr.io/portainer-ce
+    command: -H tcp://tasks.agent:9001 --tlsskipverify
+    ports:
+      - "9000:9000"
+    volumes:
+      - portainer_data:/data
+    networks:
+      - agent_network
+    deploy:
+      mode: replicated
+      replicas: 1
+
+networks:
+  agent_network:
+    driver: overlay
+   # attachable: true
+
+volumes:
+  portainer_data:
